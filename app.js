@@ -4,6 +4,10 @@ let chartInstances = []; // array of { id, type, instance }
 let gridCols = 2;
 let gridRows = 10;
 
+/* ===== Multiple savedDatasets ===== */
+let savedDatasets = {}; // { name: { headers, rows, gridCols, gridRows } }
+let activeDataset = 'Dataset 1';
+
 /* ===== Undo/Redo ===== */
 let undoStack = [];
 let redoStack = [];
@@ -36,7 +40,35 @@ function pushUndo() {
     undoStack.push(snapshotGrid());
     if (undoStack.length > 50) undoStack.shift();
     redoStack = [];
+    saveToLocalStorage();
   }, 300);
+}
+
+/* ===== localStorage persistence ===== */
+function saveToLocalStorage() {
+  const snap = snapshotGrid();
+  savedDatasets[activeDataset] = snap;
+  try {
+    localStorage.setItem('statsapp_datasets', JSON.stringify(savedDatasets));
+    localStorage.setItem('statsapp_active', activeDataset);
+  } catch(e) {}
+}
+
+function loadFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem('statsapp_datasets');
+    const act = localStorage.getItem('statsapp_active');
+    if (raw) {
+      savedDatasets = JSON.parse(raw);
+      if (act && savedDatasets[act]) activeDataset = act;
+      const snap = savedDatasets[activeDataset];
+      if (snap) {
+        restoreSnapshot(snap);
+        return true;
+      }
+    }
+  } catch(e) {}
+  return false;
 }
 
 function undo() {
@@ -63,6 +95,13 @@ const insightsContent = document.getElementById('insights-content');
 const correlationSection = document.getElementById('correlation-section');
 const correlationContent = document.getElementById('correlation-content');
 const invalidBadge = document.getElementById('invalid-badge');
+const hypothesisSection = document.getElementById('hypothesis-section');
+const hypothesisContent = document.getElementById('hypothesis-content');
+const effectSizeSection = document.getElementById('effect-size-section');
+const effectSizeContent = document.getElementById('effect-size-content');
+const groupStatsSection = document.getElementById('group-stats-section');
+const groupStatsContent = document.getElementById('group-stats-content');
+const datasetTabsEl = document.getElementById('dataset-tabs');
 
 const CHART_TYPES = [
   { value: 'auto', label: 'Auto (best fit)' },
@@ -172,6 +211,11 @@ function initGrid(rows, cols, skipUndo) {
     inp.setAttribute('autocorrect', 'off');
     inp.setAttribute('spellcheck', 'false');
     th.appendChild(inp);
+    const delBtn = document.createElement('span');
+    delBtn.className = 'col-delete-btn';
+    delBtn.textContent = '×';
+    delBtn.addEventListener('click', e => { e.stopPropagation(); removeColumn(th); });
+    th.appendChild(delBtn);
     gridHead.appendChild(th);
   }
   for (let r = 0; r < rows; r++) {
@@ -203,6 +247,25 @@ function addRowToDOM(rowNum) {
   gridBody.appendChild(tr);
 }
 
+function removeColumn(th) {
+  const ths = Array.from(gridHead.querySelectorAll('th:not(.row-num-header)'));
+  if (ths.length <= 1) return; // keep at least 1 column
+  pushUndo();
+  const colIdx = ths.indexOf(th);
+  if (colIdx === -1) return;
+  th.remove();
+  gridCols--;
+  gridBody.querySelectorAll('tr').forEach(tr => {
+    const tds = tr.querySelectorAll('td:not(.row-num)');
+    if (tds[colIdx]) tds[colIdx].remove();
+  });
+  if (sortCol === colIdx) { sortCol = -1; }
+  else if (sortCol > colIdx) { sortCol--; }
+  updateSortIndicators();
+  validateAllCells();
+  saveToLocalStorage();
+}
+
 function addColumn() {
   pushUndo();
   gridCols++;
@@ -215,6 +278,11 @@ function addColumn() {
   inp.setAttribute('autocorrect', 'off');
   inp.setAttribute('spellcheck', 'false');
   th.appendChild(inp);
+  const delBtn = document.createElement('span');
+  delBtn.className = 'col-delete-btn';
+  delBtn.textContent = '×';
+  delBtn.addEventListener('click', e => { e.stopPropagation(); removeColumn(th); });
+  th.appendChild(delBtn);
   gridHead.appendChild(th);
   const rows = gridBody.querySelectorAll('tr');
   rows.forEach(tr => {
@@ -892,7 +960,7 @@ function buildConfig(requestedType, cols, axisOverride) {
         datasets.push({ label: `${numericCols[0]} vs ${numericCols[1]}`, data, backgroundColor: '#4a90d9' });
       }
 
-      // Regression line (on all data)
+      // Regression lines (on all data)
       const xAll = toNumbers(cols[numericCols[0]]);
       const yAll = toNumbers(cols[numericCols[1]]);
       const reg = leastSquares(xAll, yAll);
@@ -905,6 +973,30 @@ function buildConfig(requestedType, cols, axisOverride) {
           borderColor: '#e55',
           borderWidth: 2,
           borderDash: [6, 3],
+          pointRadius: 0,
+          fill: false
+        });
+      }
+      // Polynomial regression (degree 2)
+      const poly2 = polyFit(xAll, yAll, 2);
+      if (poly2 && xAll.length > 3) {
+        const xMin = Math.min(...xAll), xMax = Math.max(...xAll);
+        const nPts = 50;
+        const step = (xMax - xMin) / (nPts - 1);
+        const polyData = [];
+        for (let i = 0; i < nPts; i++) {
+          const px = xMin + i * step;
+          let py = 0;
+          poly2.coeffs.forEach((c, j) => { py += c * Math.pow(px, j); });
+          polyData.push({ x: +px.toFixed(4), y: +py.toFixed(4) });
+        }
+        datasets.push({
+          label: `Poly2: R²=${poly2.r2}`,
+          data: polyData,
+          type: 'line',
+          borderColor: '#34c759',
+          borderWidth: 2,
+          borderDash: [3, 3],
           pointRadius: 0,
           fill: false
         });
@@ -924,7 +1016,7 @@ function buildConfig(requestedType, cols, axisOverride) {
     if (canGroup && numericCols.length >= 2 && groupKeys.length > 1) {
       // Grouped bar: categories on x-axis, one dataset per numeric column
       const uniqueCats = [...new Set(cols[groupCol])];
-      const datasets = numericCols.map((nc, ci) => {
+      const barDs = numericCols.map((nc, ci) => {
         const catMap = {};
         cols[groupCol].forEach((cat, i) => {
           const v = Number(cols[nc][i]);
@@ -939,7 +1031,7 @@ function buildConfig(requestedType, cols, axisOverride) {
           backgroundColor: GROUP_COLORS[ci % GROUP_COLORS.length]
         };
       });
-      config = { type: 'bar', data: { labels: uniqueCats, datasets } };
+      config = { type: 'bar', data: { labels: uniqueCats, datasets: barDs } };
     } else if (catCols.length && numericCols.length) {
       config = { type: 'bar', data: { labels: cols[catCols[0]], datasets: [{ label: numericCols[0], data: toNumbers(cols[numericCols[0]]), backgroundColor: '#4a90d9' }] } };
     } else {
@@ -950,16 +1042,22 @@ function buildConfig(requestedType, cols, axisOverride) {
       // Grouped line: one line per category
       const maxLen = Math.max(...groupKeys.map(gk => toNumbers(groups[gk][firstNumCol] || []).length));
       const labels = Array.from({ length: maxLen }, (_, i) => i + 1);
-      const datasets = groupKeys.map((gk, gi) => ({
+      const lineGroupDs = groupKeys.map((gk, gi) => ({
         label: gk,
         data: toNumbers(groups[gk][firstNumCol] || []),
         borderColor: GROUP_COLORS[gi % GROUP_COLORS.length],
         fill: false,
         tension: 0.2
       }));
-      config = { type: 'line', data: { labels, datasets } };
+      config = { type: 'line', data: { labels, datasets: lineGroupDs } };
     } else {
-      config = { type: 'line', data: { labels: allNums.map((_, i) => i + 1), datasets: [{ label: firstNumCol || 'Data', data: allNums, borderColor: '#4a90d9', fill: false, tension: 0.2 }] } };
+      const lineDs = [{ label: firstNumCol || 'Data', data: allNums, borderColor: '#4a90d9', fill: false, tension: 0.2 }];
+      // Moving average overlay
+      if (allNums.length >= 5) {
+        const ma = movingAverage(allNums);
+        lineDs.push({ label: 'Moving Avg', data: ma.map(v => +v.toFixed(4)), borderColor: '#ff9500', borderWidth: 2, borderDash: [5, 3], pointRadius: 0, fill: false, tension: 0.3 });
+      }
+      config = { type: 'line', data: { labels: allNums.map((_, i) => i + 1), datasets: lineDs } };
     }
   } else if (type === 'area') {
     config = { type: 'line', data: { labels: allNums.map((_, i) => i + 1), datasets: [{ label: firstNumCol || 'Data', data: allNums, borderColor: '#4a90d9', backgroundColor: 'rgba(74,144,217,0.15)', fill: true, tension: 0.2 }] } };
@@ -972,16 +1070,29 @@ function buildConfig(requestedType, cols, axisOverride) {
       const binCount = Math.ceil(Math.sqrt(allVals.length));
       const binW = (max - min) / binCount || 1;
       const labels = Array.from({ length: binCount }, (_, i) => r(min + i * binW) + '–' + r(min + (i + 1) * binW));
-      const datasets = groupKeys.map((gk, gi) => {
+      const histGroupDs = groupKeys.map((gk, gi) => {
         const nums = toNumbers(groups[gk][firstNumCol] || []);
         const bins = Array(binCount).fill(0);
         nums.forEach(v => { const idx = Math.min(Math.floor((v - min) / binW), binCount - 1); bins[idx]++; });
         return { label: gk, data: bins, backgroundColor: GROUP_COLORS[gi % GROUP_COLORS.length] + '99' };
       });
-      config = { type: 'bar', data: { labels, datasets } };
+      config = { type: 'bar', data: { labels, datasets: histGroupDs } };
     } else {
       const h = histBins(allNums);
-      config = { type: 'bar', data: { labels: h.labels, datasets: [{ label: 'Frequency', data: h.bins, backgroundColor: '#4a90d9' }] } };
+      const histDs = [{ label: 'Frequency', data: h.bins, backgroundColor: '#4a90d9' }];
+      // Normal PDF overlay
+      if (allNums.length >= 5) {
+        const mean = allNums.reduce((a, b) => a + b, 0) / allNums.length;
+        const std = Math.sqrt(allNums.reduce((s, v) => s + (v - mean) ** 2, 0) / allNums.length) || 1;
+        const min = Math.min(...allNums), max = Math.max(...allNums);
+        const binW = (max - min) / h.bins.length || 1;
+        const pdfData = h.labels.map((_, i) => {
+          const midpoint = min + (i + 0.5) * binW;
+          return +(normalPDF(midpoint, mean, std) * allNums.length * binW).toFixed(4);
+        });
+        histDs.push({ label: 'Normal fit', data: pdfData, type: 'line', borderColor: '#e55', borderWidth: 2, pointRadius: 0, fill: false, tension: 0.4 });
+      }
+      config = { type: 'bar', data: { labels: h.labels, datasets: histDs } };
     }
   } else if (type === 'pie') {
     const col = catCols[0] || firstNumCol || names[0];
@@ -1058,15 +1169,15 @@ function buildConfig(requestedType, cols, axisOverride) {
   } else if (type === 'radar') {
     const labels = allNums.map((_, i) => `${i + 1}`);
     if (numericCols.length >= 2) {
-      const datasets = numericCols.map((col, ci) => ({
+      const radarDs = numericCols.map((col, ci) => ({
         label: col,
         data: toNumbers(cols[col]),
         borderColor: `hsl(${ci * 120},65%,50%)`,
         backgroundColor: `hsla(${ci * 120},65%,50%,0.1)`,
         fill: true
       }));
-      const maxLen = Math.max(...datasets.map(d => d.data.length));
-      config = { type: 'radar', data: { labels: Array.from({ length: maxLen }, (_, i) => `${i + 1}`), datasets } };
+      const maxLen = Math.max(...radarDs.map(d => d.data.length));
+      config = { type: 'radar', data: { labels: Array.from({ length: maxLen }, (_, i) => `${i + 1}`), datasets: radarDs } };
     } else {
       config = { type: 'radar', data: { labels, datasets: [{ label: firstNumCol || 'Data', data: allNums, borderColor: '#4a90d9', backgroundColor: 'rgba(74,144,217,0.15)', fill: true }] } };
     }
@@ -1130,11 +1241,10 @@ function buildConfig(requestedType, cols, axisOverride) {
       const allVals = toNumbers(cols[firstNumCol]);
       const globalKDE = computeKDE(allVals);
       const sharedPoints = globalKDE.points;
-      const datasets = groupKeys.map((gk, gi) => {
+      const kdeGroupDs = groupKeys.map((gk, gi) => {
         const nums = toNumbers(groups[gk][firstNumCol] || []);
         if (nums.length < 2) return null;
         const kde = computeKDE(nums);
-        // Interpolate onto shared points for alignment
         return {
           label: gk,
           data: kde.densities,
@@ -1147,12 +1257,12 @@ function buildConfig(requestedType, cols, axisOverride) {
       }).filter(Boolean);
       config = {
         type: 'line',
-        data: { labels: sharedPoints.map(v => r(v)), datasets },
+        data: { labels: sharedPoints.map(v => r(v)), datasets: kdeGroupDs },
         options: { responsive: true, scales: { y: { beginAtZero: true } } }
       };
     } else {
       const kdeResult = computeKDE(allNums);
-      const datasets = [
+      const kdeDs = [
         { label: 'Density', data: kdeResult.densities, borderColor: '#4a90d9', backgroundColor: 'rgba(74,144,217,0.15)', fill: true, tension: 0.4, pointRadius: 0 }
       ];
       // overlay multiple columns if available
@@ -1161,7 +1271,7 @@ function buildConfig(requestedType, cols, axisOverride) {
           const nums2 = toNumbers(cols[col]);
           if (nums2.length < 2) return;
           const kde2 = computeKDE(nums2);
-          datasets.push({
+          kdeDs.push({
             label: col + ' density',
             data: kde2.densities,
             borderColor: GROUP_COLORS[(ci + 1) % GROUP_COLORS.length],
@@ -1171,11 +1281,11 @@ function buildConfig(requestedType, cols, axisOverride) {
             pointRadius: 0
           });
         });
-        datasets[0].label = numericCols[0] + ' density';
+        kdeDs[0].label = numericCols[0] + ' density';
       }
       config = {
         type: 'line',
-        data: { labels: kdeResult.points.map(v => r(v)), datasets },
+        data: { labels: kdeResult.points.map(v => r(v)), datasets: kdeDs },
         options: { responsive: true, scales: { y: { beginAtZero: true } } }
       };
     }
@@ -1284,6 +1394,7 @@ function renderSingleChart(id) {
 
   const canvas = card.querySelector('canvas');
   entry.instance = new Chart(canvas.getContext('2d'), config);
+  setupChartClickHighlight(entry.instance);
 }
 
 function renderAllCharts() {
@@ -1318,6 +1429,607 @@ function exportPNG() {
   a.click();
 }
 
+/* ===== Dataset tabs ===== */
+function renderDatasetTabs() {
+  datasetTabsEl.innerHTML = '';
+  Object.keys(savedDatasets).forEach(name => {
+    const tab = document.createElement('button');
+    tab.className = 'dataset-tab' + (name === activeDataset ? ' active' : '');
+    tab.innerHTML = name;
+    if (Object.keys(savedDatasets).length > 1) {
+      const close = document.createElement('span');
+      close.className = 'tab-close';
+      close.textContent = '×';
+      close.addEventListener('click', e => { e.stopPropagation(); deleteDataset(name); });
+      tab.appendChild(close);
+    }
+    tab.addEventListener('click', () => switchDataset(name));
+    datasetTabsEl.appendChild(tab);
+  });
+}
+
+function switchDataset(name) {
+  // save current
+  savedDatasets[activeDataset] = snapshotGrid();
+  activeDataset = name;
+  const snap = savedDatasets[name];
+  if (snap) restoreSnapshot(snap);
+  else initGrid(10, 2, true);
+  renderDatasetTabs();
+  saveToLocalStorage();
+}
+
+function addDataset() {
+  savedDatasets[activeDataset] = snapshotGrid();
+  let n = Object.keys(savedDatasets).length + 1;
+  let name = `Dataset ${n}`;
+  while (savedDatasets[name]) { n++; name = `Dataset ${n}`; }
+  savedDatasets[name] = null;
+  activeDataset = name;
+  initGrid(10, 2, true);
+  renderDatasetTabs();
+  saveToLocalStorage();
+}
+
+function deleteDataset(name) {
+  const keys = Object.keys(savedDatasets);
+  if (keys.length <= 1) return;
+  delete savedDatasets[name];
+  if (activeDataset === name) {
+    activeDataset = Object.keys(savedDatasets)[0];
+    const snap = savedDatasets[activeDataset];
+    if (snap) restoreSnapshot(snap); else initGrid(10, 2, true);
+  }
+  renderDatasetTabs();
+  saveToLocalStorage();
+}
+
+/* ===== Formula column ===== */
+function showFormulaModal() {
+  const modal = document.createElement('div');
+  modal.className = 'formula-modal';
+  modal.innerHTML = `<div class="formula-modal-inner">
+    <h3>Add Formula Column</h3>
+    <input type="text" id="formula-name" placeholder="Column name" value="Result">
+    <input type="text" id="formula-expr" placeholder="e.g. Col1 / Col2">
+    <div class="formula-hint">Use column names. Supports: + - * / ** sqrt() log() abs() round() min() max()</div>
+    <div class="formula-btns">
+      <button class="pill-btn" id="formula-cancel">Cancel</button>
+      <button class="pill-btn" id="formula-ok" style="background:var(--primary);color:#fff">Add</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#formula-cancel').addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  modal.querySelector('#formula-ok').addEventListener('click', () => {
+    const name = modal.querySelector('#formula-name').value.trim() || 'Result';
+    const expr = modal.querySelector('#formula-expr').value.trim();
+    modal.remove();
+    if (!expr) return;
+    applyFormula(name, expr);
+  });
+}
+
+function applyFormula(colName, expr) {
+  pushUndo();
+  // Get current headers and data
+  const headers = Array.from(gridHead.querySelectorAll('th:not(.row-num-header) input')).map(i => i.value.trim());
+  const bodyRows = gridBody.querySelectorAll('tr');
+
+  // Add new column
+  addColumn();
+  const newIdx = gridCols - 1;
+  const hInputs = gridHead.querySelectorAll('th:not(.row-num-header) input');
+  hInputs[newIdx].value = colName;
+
+  // Safe math functions
+  const mathFns = { sqrt: Math.sqrt, log: Math.log, abs: Math.abs, round: Math.round, min: Math.min, max: Math.max, pow: Math.pow, exp: Math.exp, ceil: Math.ceil, floor: Math.floor };
+
+  bodyRows.forEach(tr => {
+    const cells = tr.querySelectorAll('td:not(.row-num) input');
+    // Build variable map from row values
+    const vars = {};
+    headers.forEach((h, i) => {
+      const v = cells[i] ? Number(cells[i].value.trim()) : NaN;
+      vars[h] = isNaN(v) ? 0 : v;
+    });
+
+    try {
+      // Replace column names with values in expression
+      let safeExpr = expr;
+      // Sort headers by length descending to avoid partial replacements
+      const sortedHeaders = [...headers].sort((a, b) => b.length - a.length);
+      sortedHeaders.forEach(h => {
+        safeExpr = safeExpr.replace(new RegExp(h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), vars[h]);
+      });
+      // Replace math function names
+      Object.keys(mathFns).forEach(fn => {
+        safeExpr = safeExpr.replace(new RegExp(`\\b${fn}\\b`, 'g'), `__fn.${fn}`);
+      });
+      const result = new Function('__fn', `"use strict"; return (${safeExpr});`)(mathFns);
+      if (cells[newIdx] && isFinite(result)) {
+        cells[newIdx].value = +result.toFixed(4);
+      }
+    } catch(e) { /* skip invalid rows */ }
+  });
+  validateAllCells();
+  saveToLocalStorage();
+}
+
+/* ===== Hypothesis testing ===== */
+// One-sample t-test
+function tTest1Sample(nums, mu0) {
+  const n = nums.length;
+  if (n < 2) return null;
+  const mean = nums.reduce((a, b) => a + b, 0) / n;
+  const std = Math.sqrt(nums.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1));
+  const t = (mean - mu0) / (std / Math.sqrt(n));
+  const df = n - 1;
+  const p = 2 * tDistP(Math.abs(t), df);
+  return { test: '1-sample t', t: r(t), df, p: r(p), sig: p < 0.05, mean: r(mean), mu0 };
+}
+
+// Two-sample independent t-test (Welch's)
+function tTest2Sample(a, b) {
+  const n1 = a.length, n2 = b.length;
+  if (n1 < 2 || n2 < 2) return null;
+  const m1 = a.reduce((s, v) => s + v, 0) / n1;
+  const m2 = b.reduce((s, v) => s + v, 0) / n2;
+  const v1 = a.reduce((s, v) => s + (v - m1) ** 2, 0) / (n1 - 1);
+  const v2 = b.reduce((s, v) => s + (v - m2) ** 2, 0) / (n2 - 1);
+  const se = Math.sqrt(v1 / n1 + v2 / n2);
+  if (se === 0) return null;
+  const t = (m1 - m2) / se;
+  const df = Math.floor((v1 / n1 + v2 / n2) ** 2 / ((v1 / n1) ** 2 / (n1 - 1) + (v2 / n2) ** 2 / (n2 - 1)));
+  const p = 2 * tDistP(Math.abs(t), df);
+  return { test: '2-sample t (Welch)', t: r(t), df, p: r(p), sig: p < 0.05 };
+}
+
+// One-way ANOVA
+function anova(groupArrays) {
+  const k = groupArrays.length;
+  if (k < 2) return null;
+  const all = groupArrays.flat();
+  const N = all.length;
+  const grandMean = all.reduce((a, b) => a + b, 0) / N;
+  let ssBetween = 0, ssWithin = 0;
+  groupArrays.forEach(g => {
+    const gMean = g.reduce((a, b) => a + b, 0) / g.length;
+    ssBetween += g.length * (gMean - grandMean) ** 2;
+    g.forEach(v => { ssWithin += (v - gMean) ** 2; });
+  });
+  const dfB = k - 1, dfW = N - k;
+  if (dfW <= 0) return null;
+  const msB = ssBetween / dfB, msW = ssWithin / dfW;
+  const F = msW === 0 ? Infinity : msB / msW;
+  const p = 1 - fDistCDF(F, dfB, dfW);
+  return { test: 'One-way ANOVA', F: r(F), dfB, dfW, p: r(p), sig: p < 0.05 };
+}
+
+// Chi-squared goodness of fit (observed vs uniform expected)
+function chiSquaredTest(observed) {
+  const n = observed.length;
+  if (n < 2) return null;
+  const total = observed.reduce((a, b) => a + b, 0);
+  const expected = total / n;
+  let chi2 = 0;
+  observed.forEach(o => { chi2 += (o - expected) ** 2 / expected; });
+  const df = n - 1;
+  const p = 1 - chi2CDF(chi2, df);
+  return { test: 'Chi-squared', chi2: r(chi2), df, p: r(p), sig: p < 0.05 };
+}
+
+// Approximate t-distribution p-value (one-tail) using normal approx
+function tDistP(t, df) {
+  // Use normal approximation (works well for all practical df)
+  // Abramowitz & Stegun approximation via cube-root transform
+  if (df <= 0) return 0.5;
+  const A = 1 - 1 / (4 * df) + 1 / (32 * df * df);
+  const B = df * (1 + t * t / df);
+  const z = Math.abs(t) * (1 - 1 / (4 * df)) / Math.sqrt(t * t / df * (1 + 1 / (2 * df)) + 1) || 0;
+  // Simpler: for df > 3, use Wilson-Hilferty
+  const v = df;
+  const z2 = (Math.pow(Math.abs(t) * Math.abs(t) / v, 1/3) - (1 - 2 / (9 * v))) / Math.sqrt(2 / (9 * v));
+  return 0.5 * erfc(z2 / Math.sqrt(2));
+}
+
+function erfc(x) {
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+  const result = poly * Math.exp(-x * x);
+  return x >= 0 ? result : 2 - result;
+}
+
+function lgamma(x) {
+  // Lanczos approximation
+  const c = [76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
+  let y = x, tmp = x + 5.5;
+  tmp -= (x + 0.5) * Math.log(tmp);
+  let ser = 1.000000000190015;
+  for (let j = 0; j < 6; j++) ser += c[j] / ++y;
+  return -tmp + Math.log(2.5066282746310005 * ser / x);
+}
+
+// F-distribution CDF approximation
+function fDistCDF(f, d1, d2) {
+  if (f <= 0) return 0;
+  const x = d1 * f / (d1 * f + d2);
+  return regularizedBeta(x, d1 / 2, d2 / 2);
+}
+
+// Regularized incomplete beta via continued fraction
+function regularizedBeta(x, a, b) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  const lnBeta = lgamma(a) + lgamma(b) - lgamma(a + b);
+  const front = Math.exp(a * Math.log(x) + b * Math.log(1 - x) - lnBeta);
+  // Use continued fraction
+  if (x < (a + 1) / (a + b + 2)) {
+    return front * betaCF(x, a, b) / a;
+  }
+  return 1 - front * betaCF(1 - x, b, a) / b;
+}
+
+function betaCF(x, a, b) {
+  const maxIter = 200;
+  const eps = 1e-10;
+  let qab = a + b, qap = a + 1, qam = a - 1;
+  let c = 1, d = 1 - qab * x / qap;
+  if (Math.abs(d) < 1e-30) d = 1e-30;
+  d = 1 / d;
+  let h = d;
+  for (let m = 1; m <= maxIter; m++) {
+    let m2 = 2 * m;
+    let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+    d = 1 + aa * d; if (Math.abs(d) < 1e-30) d = 1e-30; d = 1 / d;
+    c = 1 + aa / c; if (Math.abs(c) < 1e-30) c = 1e-30;
+    h *= d * c;
+    aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+    d = 1 + aa * d; if (Math.abs(d) < 1e-30) d = 1e-30; d = 1 / d;
+    c = 1 + aa / c; if (Math.abs(c) < 1e-30) c = 1e-30;
+    const del = d * c;
+    h *= del;
+    if (Math.abs(del - 1) < eps) break;
+  }
+  return h;
+}
+
+// Chi-squared CDF via regularized gamma
+function chi2CDF(x, df) {
+  if (x <= 0) return 0;
+  return regularizedGamma(df / 2, x / 2);
+}
+
+function regularizedGamma(a, x) {
+  if (x < a + 1) {
+    // Series expansion
+    let sum = 1 / a, term = 1 / a;
+    for (let n = 1; n < 200; n++) {
+      term *= x / (a + n);
+      sum += term;
+      if (Math.abs(term) < 1e-10) break;
+    }
+    return sum * Math.exp(-x + a * Math.log(x) - lgamma(a));
+  }
+  // Continued fraction
+  let f = 1e-30, c = 1e-30, d = x + 1 - a; d = 1 / d;
+  let h = d;
+  for (let n = 1; n < 200; n++) {
+    const an = -n * (n - a);
+    const bn = x + 2 * n + 1 - a;
+    d = bn + an * d; if (Math.abs(d) < 1e-30) d = 1e-30; d = 1 / d;
+    c = bn + an / c; if (Math.abs(c) < 1e-30) c = 1e-30;
+    const del = d * c;
+    h *= del;
+    if (Math.abs(del - 1) < 1e-10) break;
+  }
+  return 1 - h * Math.exp(-x + a * Math.log(x) - lgamma(a));
+}
+
+function runHypothesisTests(cols) {
+  const names = Object.keys(cols);
+  const numericCols = names.filter(n => toNumbers(cols[n]).length > cols[n].length * 0.5);
+  const catCols = names.filter(n => !numericCols.includes(n));
+  const results = [];
+
+  // One-sample t-tests (H0: mu = 0) for each numeric column
+  numericCols.forEach(name => {
+    const nums = toNumbers(cols[name]);
+    if (nums.length >= 2) {
+      const res = tTest1Sample(nums, 0);
+      if (res) results.push({ ...res, col: name });
+    }
+  });
+
+  // If we have a categorical grouping variable + numeric columns → 2-sample t / ANOVA
+  if (catCols.length >= 1 && numericCols.length >= 1) {
+    const groups = groupByCategory(cols, catCols[0], numericCols);
+    const groupKeys = Object.keys(groups);
+
+    numericCols.forEach(nc => {
+      const validKeys = groupKeys.filter(gk => toNumbers(groups[gk][nc] || []).length >= 2);
+      const groupArrays = validKeys.map(gk => toNumbers(groups[gk][nc] || []));
+      // Compute per-group means for explanations
+      const groupMeans = {};
+      validKeys.forEach((gk, i) => {
+        const arr = groupArrays[i];
+        groupMeans[gk] = r(arr.reduce((a, b) => a + b, 0) / arr.length);
+      });
+
+      if (groupArrays.length === 2) {
+        const res = tTest2Sample(groupArrays[0], groupArrays[1]);
+        if (res) results.push({ ...res, col: `${nc} by ${catCols[0]}`, variable: nc, catVar: catCols[0], groups: `${validKeys[0]} vs ${validKeys[1]}`, groupMeans });
+      }
+      if (groupArrays.length >= 2) {
+        const res = anova(groupArrays);
+        if (res) results.push({ ...res, col: `${nc} by ${catCols[0]}`, variable: nc, catVar: catCols[0], groupKeys: validKeys, groupMeans });
+      }
+    });
+
+    // Chi-squared on category frequencies
+    const freq = {};
+    cols[catCols[0]].forEach(v => { freq[v] = (freq[v] || 0) + 1; });
+    const observed = Object.values(freq);
+    if (observed.length >= 2) {
+      const res = chiSquaredTest(observed);
+      if (res) results.push({ ...res, col: catCols[0] + ' (frequencies)' });
+    }
+  }
+
+  return results;
+}
+
+function hypExplain(res) {
+  const meansStr = res.groupMeans
+    ? Object.entries(res.groupMeans).map(([g, m]) => `<b>${g}</b>: ${m}`).join(', ')
+    : '';
+  if (res.test === '1-sample t') {
+    return res.sig
+      ? `The mean of <b>${res.col}</b> (${res.mean}) is significantly different from ${res.mu0} (p=${res.p}). There is strong evidence the true average is not ${res.mu0}.`
+      : `The mean of <b>${res.col}</b> (${res.mean}) is not significantly different from ${res.mu0} (p=${res.p}). Not enough evidence to reject that the true average equals ${res.mu0}.`;
+  }
+  if (res.test.startsWith('2-sample')) {
+    const base = res.sig
+      ? `<b>${res.variable}</b> differs significantly between the two levels of <b>${res.catVar}</b> (p=${res.p}). The difference is unlikely due to chance.`
+      : `<b>${res.variable}</b> does not differ significantly between the two levels of <b>${res.catVar}</b> (p=${res.p}). The difference could be random variation.`;
+    return meansStr ? `${base}<br>Group means — ${meansStr}` : base;
+  }
+  if (res.test === 'One-way ANOVA') {
+    const base = res.sig
+      ? `At least one level of <b>${res.catVar}</b> has a significantly different mean for <b>${res.variable}</b> (p=${res.p}).`
+      : `No significant difference in <b>${res.variable}</b> across the levels of <b>${res.catVar}</b> (p=${res.p}). The groups have similar averages.`;
+    return meansStr ? `${base}<br>Group means — ${meansStr}` : base;
+  }
+  if (res.test === 'Chi-squared') {
+    return res.sig
+      ? `The category frequencies for <b>${res.col}</b> are significantly unequal (p=${res.p}). The distribution is not uniform.`
+      : `The category frequencies for <b>${res.col}</b> are not significantly different from uniform (p=${res.p}).`;
+  }
+  return '';
+}
+
+function renderHypothesisTests(results) {
+  if (!results.length) { hypothesisSection.classList.add('hidden'); return; }
+  hypothesisSection.classList.remove('hidden');
+  let html = '<table class="hyp-table"><thead><tr><th>Variable</th><th>Test</th><th>Statistic</th><th>df</th><th>p-value</th><th>Result</th></tr></thead><tbody>';
+  results.forEach(res => {
+    const stat = res.t !== undefined ? `t=${res.t}` : res.F !== undefined ? `F=${res.F}` : `χ²=${res.chi2}`;
+    const df = res.dfB !== undefined ? `${res.dfB},${res.dfW}` : res.df;
+    const cls = res.sig ? 'sig' : 'not-sig';
+    const explain = hypExplain(res);
+    html += `<tr><td>${res.col}</td><td>${res.test}</td><td>${stat}</td><td>${df}</td><td>${res.p}</td><td class="${cls}">${res.sig ? 'Significant' : 'Not sig.'}</td></tr>`;
+    html += `<tr class="hyp-explain-row"><td colspan="6">${explain}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  hypothesisContent.innerHTML = html;
+}
+
+/* ===== Effect size ===== */
+function computeEffectSizes(cols) {
+  const names = Object.keys(cols);
+  const numericCols = names.filter(n => toNumbers(cols[n]).length > cols[n].length * 0.5);
+  const catCols = names.filter(n => !numericCols.includes(n));
+  const results = [];
+
+  if (catCols.length < 1 || numericCols.length < 1) return results;
+
+  const groups = groupByCategory(cols, catCols[0], numericCols);
+  const groupKeys = Object.keys(groups);
+  if (groupKeys.length < 2) return results;
+
+  numericCols.forEach(nc => {
+    const groupArrays = groupKeys.map(gk => toNumbers(groups[gk][nc] || [])).filter(a => a.length >= 2);
+
+    // Cohen's d (for 2 groups)
+    if (groupArrays.length === 2) {
+      const [a, b] = groupArrays;
+      const m1 = a.reduce((s, v) => s + v, 0) / a.length;
+      const m2 = b.reduce((s, v) => s + v, 0) / b.length;
+      const s1 = Math.sqrt(a.reduce((s, v) => s + (v - m1) ** 2, 0) / (a.length - 1));
+      const s2 = Math.sqrt(b.reduce((s, v) => s + (v - m2) ** 2, 0) / (b.length - 1));
+      const pooled = Math.sqrt(((a.length - 1) * s1 * s1 + (b.length - 1) * s2 * s2) / (a.length + b.length - 2));
+      const d = pooled === 0 ? 0 : (m1 - m2) / pooled;
+      const mag = Math.abs(d) < 0.2 ? 'negligible' : Math.abs(d) < 0.5 ? 'small' : Math.abs(d) < 0.8 ? 'medium' : 'large';
+      results.push({ col: nc, measure: "Cohen's d", value: r(d), magnitude: mag, groups: `${groupKeys[0]} vs ${groupKeys[1]}` });
+    }
+
+    // Eta-squared (from ANOVA)
+    if (groupArrays.length >= 2) {
+      const all = groupArrays.flat();
+      const grandMean = all.reduce((a, b) => a + b, 0) / all.length;
+      let ssBetween = 0, ssTotal = 0;
+      groupArrays.forEach(g => {
+        const gMean = g.reduce((a, b) => a + b, 0) / g.length;
+        ssBetween += g.length * (gMean - grandMean) ** 2;
+      });
+      all.forEach(v => { ssTotal += (v - grandMean) ** 2; });
+      const eta2 = ssTotal === 0 ? 0 : ssBetween / ssTotal;
+      const mag = eta2 < 0.01 ? 'negligible' : eta2 < 0.06 ? 'small' : eta2 < 0.14 ? 'medium' : 'large';
+      results.push({ col: nc, measure: 'Eta-squared (η²)', value: r(eta2), magnitude: mag });
+    }
+  });
+  return results;
+}
+
+function effectExplain(res) {
+  if (res.measure === "Cohen's d") {
+    const dir = res.value > 0 ? 'higher' : 'lower';
+    const absD = Math.abs(res.value);
+    if (res.magnitude === 'negligible') return `The difference between groups (${res.groups}) for <b>${res.col}</b> is negligible (d=${res.value}). The means are practically identical.`;
+    if (res.magnitude === 'small') return `A small difference exists between groups (${res.groups}) for <b>${res.col}</b> (d=${res.value}). The first group is slightly ${dir}.`;
+    if (res.magnitude === 'medium') return `A moderate difference between groups (${res.groups}) for <b>${res.col}</b> (d=${res.value}). The effect is noticeable and practically meaningful.`;
+    return `A large difference between groups (${res.groups}) for <b>${res.col}</b> (d=${res.value}). The groups are clearly separated on this variable.`;
+  }
+  if (res.measure.includes('Eta')) {
+    const pct = (res.value * 100).toFixed(1);
+    if (res.magnitude === 'negligible') return `The grouping variable explains only ${pct}% of variance in <b>${res.col}</b> — virtually none.`;
+    if (res.magnitude === 'small') return `The grouping variable explains ${pct}% of variance in <b>${res.col}</b> — a small but detectable effect.`;
+    if (res.magnitude === 'medium') return `The grouping variable explains ${pct}% of variance in <b>${res.col}</b> — a moderate, practically relevant effect.`;
+    return `The grouping variable explains ${pct}% of variance in <b>${res.col}</b> — a large effect. Group membership strongly predicts this variable.`;
+  }
+  return '';
+}
+
+function renderEffectSizes(results) {
+  if (!results.length) { effectSizeSection.classList.add('hidden'); return; }
+  effectSizeSection.classList.remove('hidden');
+  let html = '<table class="effect-table"><thead><tr><th>Variable</th><th>Measure</th><th>Value</th><th>Magnitude</th></tr></thead><tbody>';
+  results.forEach(res => {
+    const explain = effectExplain(res);
+    html += `<tr><td>${res.col}</td><td>${res.measure}</td><td>${res.value}</td><td>${res.magnitude}</td></tr>`;
+    html += `<tr class="hyp-explain-row"><td colspan="4">${explain}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  effectSizeContent.innerHTML = html;
+}
+
+/* ===== Descriptive stats per group ===== */
+function renderGroupStats(cols) {
+  const names = Object.keys(cols);
+  const numericCols = names.filter(n => toNumbers(cols[n]).length > cols[n].length * 0.5);
+  const catCols = names.filter(n => !numericCols.includes(n));
+  if (!catCols.length || !numericCols.length) { groupStatsSection.classList.add('hidden'); return; }
+
+  const groups = groupByCategory(cols, catCols[0], numericCols);
+  const groupKeys = Object.keys(groups);
+  if (groupKeys.length < 2) { groupStatsSection.classList.add('hidden'); return; }
+
+  groupStatsSection.classList.remove('hidden');
+  const statKeys = ['Count', 'Mean', 'Median', 'Std Dev', 'Min', 'Max'];
+  let html = '';
+
+  numericCols.forEach(nc => {
+    html += `<h3 style="font-size:0.85rem;margin:8px 0 4px;color:var(--primary)">${nc}</h3>`;
+    html += '<table class="group-stats-table"><thead><tr><th>Group</th>';
+    statKeys.forEach(k => { html += `<th>${k}</th>`; });
+    html += '</tr></thead><tbody>';
+    groupKeys.forEach(gk => {
+      const nums = toNumbers(groups[gk][nc] || []);
+      if (!nums.length) return;
+      const s = computeStats(nums);
+      html += `<tr><td style="font-weight:600">${gk}</td>`;
+      statKeys.forEach(k => { html += `<td>${s[k]}</td>`; });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+  });
+  groupStatsContent.innerHTML = html;
+}
+
+/* ===== Polynomial regression ===== */
+function polyFit(xs, ys, degree) {
+  // Fit polynomial of given degree using normal equations
+  const n = Math.min(xs.length, ys.length);
+  if (n <= degree) return null;
+  const size = degree + 1;
+  // Build Vandermonde-like system: X^T X a = X^T y
+  const XtX = Array.from({ length: size }, () => Array(size).fill(0));
+  const XtY = Array(size).fill(0);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < size; j++) {
+      XtY[j] += Math.pow(xs[i], j) * ys[i];
+      for (let k = 0; k < size; k++) {
+        XtX[j][k] += Math.pow(xs[i], j + k);
+      }
+    }
+  }
+  // Gaussian elimination
+  const aug = XtX.map((row, i) => [...row, XtY[i]]);
+  for (let col = 0; col < size; col++) {
+    let maxRow = col;
+    for (let row = col + 1; row < size; row++) {
+      if (Math.abs(aug[row][col]) > Math.abs(aug[maxRow][col])) maxRow = row;
+    }
+    [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
+    if (Math.abs(aug[col][col]) < 1e-12) return null;
+    for (let row = col + 1; row < size; row++) {
+      const f = aug[row][col] / aug[col][col];
+      for (let j = col; j <= size; j++) aug[row][j] -= f * aug[col][j];
+    }
+  }
+  const coeffs = Array(size).fill(0);
+  for (let i = size - 1; i >= 0; i--) {
+    coeffs[i] = aug[i][size];
+    for (let j = i + 1; j < size; j++) coeffs[i] -= aug[i][j] * coeffs[j];
+    coeffs[i] /= aug[i][i];
+  }
+  // R²
+  const yMean = ys.reduce((a, b) => a + b, 0) / n;
+  let ssTot = 0, ssRes = 0;
+  for (let i = 0; i < n; i++) {
+    let yPred = 0;
+    coeffs.forEach((c, j) => { yPred += c * Math.pow(xs[i], j); });
+    ssTot += (ys[i] - yMean) ** 2;
+    ssRes += (ys[i] - yPred) ** 2;
+  }
+  const r2 = ssTot === 0 ? 1 : 1 - ssRes / ssTot;
+  return { coeffs, r2: +r2.toFixed(4) };
+}
+
+function polyLabel(coeffs) {
+  return coeffs.map((c, i) => {
+    const cv = +c.toFixed(3);
+    if (i === 0) return cv;
+    if (i === 1) return `${cv}x`;
+    return `${cv}x²${i > 2 ? `^${i}` : ''}`;
+  }).reverse().join(' + ').replace(/\+ -/g, '- ');
+}
+
+/* ===== Moving average ===== */
+function movingAverage(nums, window) {
+  if (!window || window < 2) window = Math.max(3, Math.floor(nums.length / 10));
+  const result = [];
+  for (let i = 0; i < nums.length; i++) {
+    const start = Math.max(0, i - Math.floor(window / 2));
+    const end = Math.min(nums.length, start + window);
+    const slice = nums.slice(start, end);
+    result.push(slice.reduce((a, b) => a + b, 0) / slice.length);
+  }
+  return result;
+}
+
+/* ===== Normal PDF overlay for histograms ===== */
+function normalPDF(x, mean, std) {
+  return Math.exp(-0.5 * ((x - mean) / std) ** 2) / (std * Math.sqrt(2 * Math.PI));
+}
+
+/* ===== Interactive chart → grid row highlight ===== */
+function setupChartClickHighlight(chartInstance) {
+  const canvas = chartInstance.canvas;
+  canvas.addEventListener('click', e => {
+    const points = chartInstance.getElementsAtEventForMode(e, 'nearest', { intersect: true }, false);
+    // Clear previous highlights
+    gridBody.querySelectorAll('tr.highlight-row').forEach(tr => tr.classList.remove('highlight-row'));
+    if (!points.length) return;
+    const idx = points[0].index;
+    const rows = gridBody.querySelectorAll('tr');
+    if (rows[idx]) {
+      rows[idx].classList.add('highlight-row');
+      rows[idx].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  });
+}
+
 /* ===== Dark mode ===== */
 function initDarkMode() {
   const saved = localStorage.getItem('theme');
@@ -1338,6 +2050,183 @@ function toggleDarkMode() {
 /* ===== Animated transitions ===== */
 Chart.defaults.animation.duration = 600;
 Chart.defaults.animation.easing = 'easeInOutQuart';
+
+/* ===== Relationship Analysis (EDA) ===== */
+let scatterMatrixCharts = [];
+
+function renderScatterMatrix(cols) {
+  // Destroy previous charts
+  scatterMatrixCharts.forEach(c => c.destroy());
+  scatterMatrixCharts = [];
+  scatterMatrixEl.innerHTML = '';
+
+  const names = Object.keys(cols);
+  const numCols = names.filter(n => toNumbers(cols[n]).length > cols[n].length * 0.5);
+  const selected = numCols.slice(0, 6);
+  const n = selected.length;
+  if (n < 2) return;
+
+  scatterMatrixEl.style.gridTemplateColumns = `repeat(${n}, 150px)`;
+
+  const numData = {};
+  selected.forEach(name => { numData[name] = toNumbers(cols[name]); });
+
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const axisColor = isDark ? '#888' : '#aaa';
+  const pointColor = isDark ? 'rgba(90,159,230,0.5)' : 'rgba(74,144,217,0.5)';
+
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      if (row === col) {
+        // Diagonal: label
+        const label = document.createElement('div');
+        label.className = 'scatter-matrix-label';
+        label.textContent = selected[row];
+        scatterMatrixEl.appendChild(label);
+        continue;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = 150;
+      canvas.height = 150;
+      scatterMatrixEl.appendChild(canvas);
+
+      const xData = numData[selected[col]];
+      const yData = numData[selected[row]];
+      const data = [];
+      const len = Math.min(xData.length, yData.length);
+      for (let i = 0; i < len; i++) data.push({ x: xData[i], y: yData[i] });
+
+      const chart = new Chart(canvas, {
+        type: 'scatter',
+        data: { datasets: [{ data, backgroundColor: pointColor, pointRadius: 2 }] },
+        options: {
+          responsive: false,
+          plugins: { legend: { display: false }, zoom: { zoom: { wheel: { enabled: false } }, pan: { enabled: false } } },
+          scales: {
+            x: { display: row === n - 1, ticks: { font: { size: 8 }, color: axisColor, maxTicksLimit: 3 }, grid: { display: false } },
+            y: { display: col === 0, ticks: { font: { size: 8 }, color: axisColor, maxTicksLimit: 3 }, grid: { display: false } }
+          },
+          animation: false
+        }
+      });
+      scatterMatrixCharts.push(chart);
+    }
+  }
+}
+
+function renderParallelCoords(cols) {
+  const names = Object.keys(cols);
+  const numCols = names.filter(n => toNumbers(cols[n]).length > cols[n].length * 0.5);
+  const catCols = names.filter(n => !numCols.includes(n));
+  const selected = numCols.slice(0, 6);
+  if (selected.length < 2) return;
+
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const catCol = catCols[0] || null;
+
+  // Build row data
+  const numData = {};
+  selected.forEach(name => { numData[name] = cols[name].map(Number); });
+  const rowCount = cols[selected[0]].length;
+
+  // Category colors
+  const categories = catCol ? [...new Set(cols[catCol])] : ['all'];
+  const palette = ['#4a90d9', '#e55c5c', '#34c759', '#f5a623', '#9b59b6', '#1abc9c', '#e67e22', '#3498db'];
+  const catColorMap = {};
+  categories.forEach((c, i) => { catColorMap[c] = palette[i % palette.length]; });
+
+  // Min/max per axis
+  const mins = {}, maxs = {};
+  selected.forEach(name => {
+    const vals = numData[name].filter(v => !isNaN(v));
+    mins[name] = Math.min(...vals);
+    maxs[name] = Math.max(...vals);
+    if (mins[name] === maxs[name]) { mins[name] -= 1; maxs[name] += 1; }
+  });
+
+  const canvas = parallelCoordsCanvas;
+  const w = Math.max(500, selected.length * 120);
+  const h = 300;
+  canvas.width = w;
+  canvas.height = h;
+  canvas.style.height = h + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+
+  const padTop = 30, padBottom = 30, padLeft = 40, padRight = 40;
+  const plotH = h - padTop - padBottom;
+  const axisSpacing = (w - padLeft - padRight) / (selected.length - 1);
+
+  const textColor = isDark ? '#e5e5e7' : '#333';
+  const axisLineColor = isDark ? '#555' : '#ccc';
+
+  // Draw axes
+  ctx.strokeStyle = axisLineColor;
+  ctx.lineWidth = 1;
+  selected.forEach((name, i) => {
+    const x = padLeft + i * axisSpacing;
+    ctx.beginPath();
+    ctx.moveTo(x, padTop);
+    ctx.lineTo(x, padTop + plotH);
+    ctx.stroke();
+    // Label
+    ctx.fillStyle = textColor;
+    ctx.font = 'bold 10px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(name.slice(0, 10), x, padTop - 8);
+    // Min/max
+    ctx.font = '9px -apple-system, sans-serif';
+    ctx.fillText(maxs[name].toFixed(1), x, padTop - 0);
+    ctx.fillText(mins[name].toFixed(1), x, padTop + plotH + 14);
+  });
+
+  // Draw lines
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.3;
+  for (let r = 0; r < rowCount; r++) {
+    const cat = catCol ? cols[catCol][r] : 'all';
+    ctx.strokeStyle = catColorMap[cat] || '#4a90d9';
+    ctx.beginPath();
+    let started = false;
+    selected.forEach((name, i) => {
+      const val = numData[name][r];
+      if (isNaN(val)) return;
+      const x = padLeft + i * axisSpacing;
+      const t = (val - mins[name]) / (maxs[name] - mins[name]);
+      const y = padTop + plotH - t * plotH;
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1.0;
+
+  // Legend
+  if (catCol && categories.length > 1) {
+    let lx = padLeft;
+    ctx.font = '10px -apple-system, sans-serif';
+    categories.forEach(cat => {
+      ctx.fillStyle = catColorMap[cat];
+      ctx.fillRect(lx, h - 14, 10, 10);
+      ctx.fillStyle = textColor;
+      ctx.fillText(cat, lx + 13, h - 5);
+      lx += ctx.measureText(cat).width + 24;
+    });
+  }
+}
+
+function renderEDA(cols) {
+  const names = Object.keys(cols);
+  const numCols = names.filter(n => toNumbers(cols[n]).length > cols[n].length * 0.5);
+  if (numCols.length < 2) {
+    edaSection.classList.add('hidden');
+    return;
+  }
+  edaSection.classList.remove('hidden');
+  try { renderScatterMatrix(cols); } catch(e) { console.warn('Scatter matrix error:', e); }
+  try { renderParallelCoords(cols); } catch(e) { console.warn('Parallel coords error:', e); }
+}
 
 /* ===== Main ===== */
 analyzeBtn.addEventListener('click', () => {
@@ -1374,15 +2263,34 @@ analyzeBtn.addEventListener('click', () => {
   }
 
   // Outlier highlighting
-  highlightOutliers(allStats);
+  try { highlightOutliers(allStats); } catch(e) { console.warn('Outlier highlight error:', e); }
 
   // Correlation
-  const corrData = buildCorrelationMatrix(parsedColumns);
-  renderCorrelationTable(corrData);
+  let corrData = null;
+  try {
+    corrData = buildCorrelationMatrix(parsedColumns);
+    renderCorrelationTable(corrData);
+  } catch(e) { console.warn('Correlation error:', e); }
+
+  // EDA relationship charts
+  try { renderEDA(parsedColumns); } catch(e) { console.warn('EDA error:', e); }
 
   // Insights
-  insightsContent.innerHTML = generateInsights(allStats, corrData);
-  insightsSection.classList.remove('hidden');
+  try {
+    insightsContent.innerHTML = generateInsights(allStats, corrData);
+    insightsSection.classList.remove('hidden');
+  } catch(e) { console.warn('Insights error:', e); }
+
+  // Hypothesis testing
+  try {
+    const hypResults = runHypothesisTests(parsedColumns);
+    renderHypothesisTests(hypResults);
+  } catch(e) { console.warn('Hypothesis tests error:', e); }
+
+  // Group stats
+  try {
+    renderGroupStats(parsedColumns);
+  } catch(e) { console.warn('Group stats error:', e); }
 
   // Charts
   chartsSection.classList.remove('hidden');
@@ -1404,6 +2312,8 @@ document.getElementById('export-csv-btn').addEventListener('click', exportCSV);
 document.getElementById('export-png-btn').addEventListener('click', exportPNG);
 document.getElementById('dark-toggle').addEventListener('click', toggleDarkMode);
 document.getElementById('test-data-btn').addEventListener('click', loadTestData);
+document.getElementById('add-formula-btn').addEventListener('click', showFormulaModal);
+document.getElementById('add-dataset-btn').addEventListener('click', addDataset);
 
 /* ===== Synthetic test data ===== */
 function loadTestData() {
@@ -1462,7 +2372,14 @@ document.addEventListener('keydown', e => {
 
 /* ===== Init ===== */
 initDarkMode();
-initGrid(10, 2, true);
+if (!loadFromLocalStorage()) {
+  initGrid(10, 2, true);
+}
+// Init dataset tabs
+if (!Object.keys(savedDatasets).length) {
+  savedDatasets[activeDataset] = snapshotGrid();
+}
+renderDatasetTabs();
 
 /* ===== Service Worker ===== */
 if ('serviceWorker' in navigator) {

@@ -144,6 +144,30 @@ h2 { font-size: 1.1rem; margin-bottom: 8px; }
   text-align: center;
 }
 
+/* Column delete button */
+#data-grid th { position: relative; }
+.col-delete-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+  color: #c00;
+  cursor: pointer;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+#data-grid th:hover .col-delete-btn,
+.col-delete-btn:focus { opacity: 0.8; }
+@media (pointer: coarse) {
+  .col-delete-btn { opacity: 0.5; }
+}
+
 .sort-indicator {
   font-size: 10px;
   margin-left: 2px;
@@ -456,6 +480,124 @@ canvas { max-width: 100%; }
 .corr-table th {
   background: var(--bg);
   font-weight: 600;
+}
+
+/* Dataset tabs */
+.dataset-tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  overflow-x: auto;
+}
+.dataset-tabs {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.dataset-tab {
+  padding: 5px 12px;
+  font-size: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.dataset-tab.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.dataset-tab .tab-close {
+  margin-left: 6px;
+  font-size: 0.7rem;
+  opacity: 0.6;
+}
+.pill-btn-small {
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  min-height: 28px;
+}
+
+/* Hypothesis / effect size / group stats tables */
+.hyp-table, .effect-table, .group-stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.hyp-table th, .hyp-table td,
+.effect-table th, .effect-table td,
+.group-stats-table th, .group-stats-table td {
+  padding: 5px 8px;
+  border: 0.5px solid var(--separator);
+  text-align: center;
+}
+.hyp-table th, .effect-table th, .group-stats-table th {
+  background: var(--bg);
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+.sig { color: #34c759; font-weight: 600; }
+.not-sig { color: #8e8e93; }
+.hyp-explain-row td {
+  font-size: 0.75rem;
+  color: var(--text);
+  opacity: 0.7;
+  text-align: left !important;
+  padding: 3px 10px 8px;
+  border-bottom: 1.5px solid var(--separator);
+  line-height: 1.4;
+}
+
+/* Formula modal */
+.formula-modal {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.formula-modal-inner {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 20px;
+  width: 90%;
+  max-width: 400px;
+}
+.formula-modal-inner h3 { margin-bottom: 8px; font-size: 1rem; }
+.formula-modal-inner input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: var(--bg);
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.formula-modal-inner .formula-hint {
+  font-size: 0.72rem;
+  color: #888;
+  margin-bottom: 10px;
+}
+.formula-modal-inner .formula-btns {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* Highlighted row from chart click */
+#data-grid tbody tr.highlight-row td {
+  background: rgba(74, 144, 217, 0.15);
+}
+[data-theme="dark"] #data-grid tbody tr.highlight-row td {
+  background: rgba(90, 159, 230, 0.2);
 }
 
 .hidden { display: none; }

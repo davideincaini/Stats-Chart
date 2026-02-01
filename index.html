@@ -23,12 +23,17 @@
   </div>
 
   <div class="card">
+    <div class="dataset-tabs-row">
+      <div id="dataset-tabs" class="dataset-tabs"></div>
+      <button class="pill-btn pill-btn-small" id="add-dataset-btn" title="New dataset">+</button>
+    </div>
     <h2>Data Input</h2>
     <div class="grid-toolbar">
       <button class="pill-btn" id="add-col-btn">+ Column</button>
       <button class="pill-btn" id="add-row-btn">+ Row</button>
       <button class="pill-btn pill-btn-danger" id="clear-btn">Clear</button>
       <button class="pill-btn" id="test-data-btn" style="color:#34c759">Test Data</button>
+      <button class="pill-btn" id="add-formula-btn" title="Add formula column">fx</button>
       <span class="toolbar-spacer"></span>
       <button class="pill-btn" id="undo-btn" title="Undo (Ctrl+Z)">↩ Undo</button>
       <button class="pill-btn" id="redo-btn" title="Redo (Ctrl+Shift+Z)">↪ Redo</button>
@@ -62,6 +67,11 @@
     <div id="stats-grid" class="stats-grid"></div>
   </div>
 
+  <div id="group-stats-section" class="card hidden">
+    <h2>Descriptive Statistics by Group</h2>
+    <div id="group-stats-content"></div>
+  </div>
+
   <div id="insights-section" class="card hidden">
     <h2>Summary Insights</h2>
     <div id="insights-content"></div>
@@ -71,6 +81,12 @@
     <h2>Correlation Matrix</h2>
     <div id="correlation-content"></div>
   </div>
+
+  <div id="hypothesis-section" class="card hidden">
+    <h2>Hypothesis Testing</h2>
+    <div id="hypothesis-content"></div>
+  </div>
+
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
