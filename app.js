@@ -634,6 +634,61 @@ function isTimeSeries(nums) {
 }
 
 /* ===== Chart card management ===== */
+/* Types that support axis variable selection */
+const AXIS_TYPES = ['scatter', 'line', 'bar', 'area', 'histogram', 'kde', 'bubble', 'catbar'];
+
+function getColumnNames() {
+  return Object.keys(parsedColumns);
+}
+
+function buildAxisSelectors(id) {
+  const row = document.createElement('div');
+  row.className = 'axis-selector-row';
+
+  const makeSelect = (label, cls, includeNone) => {
+    const wrap = document.createElement('label');
+    wrap.className = 'axis-label';
+    wrap.textContent = label;
+    const sel = document.createElement('select');
+    sel.className = cls;
+    if (includeNone) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '(auto)';
+      sel.appendChild(opt);
+    }
+    getColumnNames().forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener('change', () => renderSingleChart(id));
+    wrap.appendChild(sel);
+    return wrap;
+  };
+
+  row.appendChild(makeSelect('X', 'axis-x-select', true));
+  row.appendChild(makeSelect('Y', 'axis-y-select', true));
+  return row;
+}
+
+function updateAxisOptions(card) {
+  const colNames = getColumnNames();
+  card.querySelectorAll('.axis-x-select, .axis-y-select').forEach(sel => {
+    const cur = sel.value;
+    // keep (auto) option, rebuild the rest
+    while (sel.options.length > 1) sel.remove(1);
+    colNames.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === cur) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  });
+}
+
 function addChartCard(selectedType) {
   const id = ++chartIdCounter;
   const card = document.createElement('div');
@@ -651,7 +706,16 @@ function addChartCard(selectedType) {
     if (t.value === selectedType) opt.selected = true;
     select.appendChild(opt);
   });
-  select.addEventListener('change', () => renderSingleChart(id));
+  select.addEventListener('change', () => {
+    const axisRow = card.querySelector('.axis-selector-row');
+    const type = select.value === 'auto' ? detectType(parsedColumns).type : select.value;
+    if (AXIS_TYPES.includes(type)) {
+      if (axisRow) axisRow.classList.remove('hidden');
+    } else {
+      if (axisRow) axisRow.classList.add('hidden');
+    }
+    renderSingleChart(id);
+  });
 
   const removeBtn = document.createElement('button');
   removeBtn.className = 'pill-btn-remove';
@@ -661,12 +725,17 @@ function addChartCard(selectedType) {
   header.appendChild(select);
   header.appendChild(removeBtn);
 
+  const axisRow = buildAxisSelectors(id);
+  const autoType = selectedType === 'auto' ? detectType(parsedColumns).type : selectedType;
+  if (!AXIS_TYPES.includes(autoType)) axisRow.classList.add('hidden');
+
   const label = document.createElement('p');
   label.className = 'chart-type-label';
 
   const canvas = document.createElement('canvas');
 
   card.appendChild(header);
+  card.appendChild(axisRow);
   card.appendChild(label);
   card.appendChild(canvas);
   chartsContainer.appendChild(card);
@@ -756,11 +825,22 @@ function getGroupedRawRows(cols, catCol) {
   return rows;
 }
 
-function buildConfig(requestedType, cols) {
+function buildConfig(requestedType, cols, axisOverride) {
+  const ax = axisOverride || {};
   const names = Object.keys(cols);
-  const numericCols = names.filter(n => toNumbers(cols[n]).length > cols[n].length * 0.5);
+  let numericCols = names.filter(n => toNumbers(cols[n]).length > cols[n].length * 0.5);
   const catCols = names.filter(n => !numericCols.includes(n));
-  const firstNumCol = numericCols[0];
+
+  // Reorder numericCols based on axis override
+  if (ax.x && numericCols.includes(ax.x)) {
+    numericCols = [ax.x, ...numericCols.filter(n => n !== ax.x)];
+  }
+  if (ax.y && numericCols.includes(ax.y) && numericCols[0] !== ax.y) {
+    // ensure Y is second
+    numericCols = [numericCols[0], ax.y, ...numericCols.filter(n => n !== numericCols[0] && n !== ax.y)];
+  }
+
+  const firstNumCol = ax.x && cols[ax.x] ? ax.x : numericCols[0];
   const allNums = firstNumCol ? toNumbers(cols[firstNumCol]) : [];
   const canGroup = catCols.length >= 1 && numericCols.length >= 1;
   const groupCol = canGroup ? catCols[0] : null;
@@ -1104,7 +1184,9 @@ function buildConfig(requestedType, cols) {
     config = { type: 'bar', data: { labels: allNums.map((_, i) => i + 1), datasets: [{ label: firstNumCol || 'Data', data: allNums, backgroundColor: '#4a90d9' }] } };
   }
 
-  if (!config.options) config.options = { responsive: true };
+  if (!config.options) config.options = {};
+  config.options.responsive = true;
+  config.options.aspectRatio = 1.4;
   if (!config.options.plugins) config.options.plugins = {};
   if (!config.options.scales) config.options.scales = {};
 
@@ -1185,7 +1267,18 @@ function renderSingleChart(id) {
   const cols = parsedColumns;
   if (!Object.keys(cols).length) return;
 
-  const { config, resolvedLabel } = buildConfig(chosenType, cols);
+  // Update axis dropdown options in case columns changed
+  updateAxisOptions(card);
+
+  // Read axis selections
+  const xSel = card.querySelector('.axis-x-select');
+  const ySel = card.querySelector('.axis-y-select');
+  const axisOverride = {
+    x: xSel ? xSel.value || null : null,
+    y: ySel ? ySel.value || null : null
+  };
+
+  const { config, resolvedLabel } = buildConfig(chosenType, cols, axisOverride);
   const label = card.querySelector('.chart-type-label');
   label.textContent = resolvedLabel;
 
