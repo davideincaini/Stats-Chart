@@ -1,5 +1,8 @@
 # Stats & Charts — Descriptive Statistics and Data Visualization PWA
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Open%20App-blue?style=for-the-badge&logo=github)](https://davideincaini.github.io/Stats-Chart)
+[![PWA](https://img.shields.io/badge/PWA-Installable%20on%20iPhone-brightgreen?style=for-the-badge&logo=pwa)](https://davideincaini.github.io/Stats-Chart)
+
 A Progressive Web App for exploratory data analysis: load a dataset, get full descriptive statistics, normality testing, outlier detection, correlation matrix, and interactive charts — all in the browser, with no backend, no installation, no data leaving your device.
 
 ---
